@@ -1,0 +1,204 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- KONFIGURACJA RUCHU
+local WALK_LIMIT = 12
+local RUN_LIMIT = 35
+local START_SPEED = 8
+local ACCEL_RATE = 0.4
+local DECEL_SPEED = (RUN_LIMIT - START_SPEED) / 0.5 
+local JUMP_BOOST = 1.5 
+local BASE_FOV = 70
+local JUMP_WIDEN = 0.5 
+
+-- KONFIGURACJA KAMERY
+local SHIFTLOCK_OFFSET = Vector3.new(1.75, 0.75, 0)
+
+local currentSpeed = START_SPEED
+local isRunning, autoBhop, inAir, useShiftlock = false, false, false, true
+local walkCycle = 0
+local lastTorsoY = 0
+local handLagY, legLagY = 0, 0
+local renderConnection = nil
+
+local lerpTargets = {
+	RA = CFrame.new(), LA = CFrame.new(), RL = CFrame.new(), LL = CFrame.new()
+}
+
+local function setupFECharacter(char)
+	if renderConnection then renderConnection:Disconnect() end
+	
+	local humanoid = char:WaitForChild("Humanoid")
+	local root = char:WaitForChild("HumanoidRootPart")
+	local torso = char:WaitForChild("Torso")
+	local limbs = {
+		["RA"] = char:WaitForChild("Right Arm"),
+		["LA"] = char:WaitForChild("Left Arm"),
+		["RL"] = char:WaitForChild("Right Leg"),
+		["LL"] = char:WaitForChild("Left Leg")
+	}
+
+	-- WYMUSZONA WIDOCZNOŚĆ W FIRST PERSON
+	for _, part in pairs(limbs) do
+		part.LocalTransparencyModifier = 0
+		part:GetPropertyChangedSignal("LocalTransparencyModifier"):Connect(function() 
+			part.LocalTransparencyModifier = 0 
+		end)
+	end
+
+	for _, limb in pairs(limbs) do
+		for _, joint in pairs(torso:GetChildren()) do
+			if joint:IsA("Motor6D") and (joint.Part1 == limb or joint.Part0 == limb) then joint:Destroy() end
+		end
+	end
+
+	humanoid.StateChanged:Connect(function(_, new)
+		inAir = (new == Enum.HumanoidStateType.Jumping or new == Enum.HumanoidStateType.Freefall)
+	end)
+
+	lastTorsoY = torso.Position.Y
+
+	renderConnection = RunService.RenderStepped:Connect(function(dt)
+		if not char.Parent or not torso or humanoid.Health <= 0 then return end
+		
+		-- LOGIKA KAMERY I SHIFTLOCKA
+		local dist = (camera.Focus.p - camera.CFrame.p).Magnitude
+		local isFirstPerson = dist < 0.7
+		
+		if useShiftlock then
+			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+			humanoid.CameraOffset = humanoid.CameraOffset:Lerp(isFirstPerson and Vector3.new(0,0,0) or SHIFTLOCK_OFFSET, 0.2)
+			
+			-- Błyskawiczny obrót postaci za kamerą
+			local _, yRotation = camera.CFrame:ToEulerAnglesYXZ()
+			root.CFrame = root.CFrame:Lerp(CFrame.new(root.Position) * CFrame.Angles(0, yRotation, 0), 0.6)
+		else
+			humanoid.CameraOffset = humanoid.CameraOffset:Lerp(Vector3.new(0,0,0), 0.2)
+			if not isFirstPerson then
+				UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			else
+				UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+			end
+		end
+
+		-- BHOP
+		if autoBhop and not inAir then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
+
+		local moveDir = humanoid.MoveDirection
+		local isMoving = moveDir.Magnitude > 0
+		
+		-- RUCH (Accel/Decel)
+		if isMoving then
+			local targetMax = isRunning and RUN_LIMIT or WALK_LIMIT
+			currentSpeed = math.min(currentSpeed + (ACCEL_RATE * 60 * dt), targetMax)
+			walkCycle = walkCycle + dt * (currentSpeed * 0.6)
+		else
+			if currentSpeed > START_SPEED then currentSpeed = math.max(currentSpeed - (DECEL_SPEED * dt), START_SPEED) end
+			walkCycle = 0
+		end
+		
+		local speedMult = inAir and JUMP_BOOST or 1
+		root.Velocity = Vector3.new(moveDir.X * currentSpeed * speedMult, root.Velocity.Y, moveDir.Z * currentSpeed * speedMult)
+		camera.FieldOfView = camera.FieldOfView + ((BASE_FOV + (currentSpeed/RUN_LIMIT)*25) - camera.FieldOfView) * 0.1
+
+		-- DYNAMICZNY DELAY (REDUKCJA PRZY SPADANIU)
+		local fallSpeed = math.abs(root.Velocity.Y)
+		local dynamicHandDelay = math.max(0.005, 0.1 - (fallSpeed * 0.002))
+		local dynamicLegDelay = math.max(0.002, 0.05 - (fallSpeed * 0.0015))
+
+		local heightDiff = (torso.Position.Y - lastTorsoY)
+		handLagY = handLagY + (heightDiff - handLagY) * dynamicHandDelay
+		legLagY = legLagY + (heightDiff - legLagY) * dynamicLegDelay
+		lastTorsoY = torso.Position.Y
+
+		local hOff = -handLagY * 2.8
+		local lOff = -legLagY * 2.0
+		local hasTool = char:FindFirstChildOfClass("Tool") ~= nil
+
+		-- ANIMACJE
+		local raT, laT, rlT, llT
+		local swing = math.sin(walkCycle) * 1.1
+
+		if inAir then
+			raT = CFrame.new(0.6 + JUMP_WIDEN, 0.5 + hOff, -0.8) * CFrame.Angles(math.rad(110), 0, math.rad(-30))
+			laT = CFrame.new(-0.6 - JUMP_WIDEN, 0.5 + hOff, -0.8) * CFrame.Angles(math.rad(110), 0, math.rad(30))
+			rlT = CFrame.new(0.5, -1.5 + lOff, -0.3) * CFrame.Angles(math.rad(-20), 0, 0)
+			llT = CFrame.new(-0.5, -1.5 + lOff, -0.3) * CFrame.Angles(math.rad(-20), 0, 0)
+		elseif isMoving then
+			raT = CFrame.new(1.5, 0.5, 0) * CFrame.Angles(swing, 0, 0) * CFrame.new(0, -0.5, 0)
+			laT = CFrame.new(-1.5, 0.5, 0) * CFrame.Angles(-swing, 0, 0) * CFrame.new(0, -0.5, 0)
+			if hasTool then
+				raT = CFrame.new(1.1, 0.4, -0.7) * CFrame.Angles(math.rad(90), math.rad(-10), 0)
+				laT = CFrame.new(-1.1, 0.4, -0.7) * CFrame.Angles(math.rad(90), math.rad(10), 0)
+			end
+			rlT = CFrame.new(0.5, -2, 0) * CFrame.new(0, 1, 0) * CFrame.Angles(-swing, 0, 0) * CFrame.new(0, -1, 0)
+			llT = CFrame.new(-0.5, -2, 0) * CFrame.new(0, 1, 0) * CFrame.Angles(swing, 0, 0) * CFrame.new(0, -1, 0)
+		else
+			if hasTool then
+				raT = CFrame.new(1.0, 0.4, -0.8) * CFrame.Angles(math.rad(85), math.rad(-15), 0)
+				laT = CFrame.new(-1.0, 0.4, -0.8) * CFrame.Angles(math.rad(85), math.rad(15), 0)
+			else
+				raT = CFrame.new(1.5, 0, 0)
+				laT = CFrame.new(-1.5, 0, 0)
+			end
+			rlT = CFrame.new(0.5, -2, 0)
+			llT = CFrame.new(-0.5, -2, 0)
+		end
+
+		lerpTargets.RA = lerpTargets.RA:Lerp(raT, 0.15)
+		lerpTargets.LA = lerpTargets.LA:Lerp(laT, 0.15)
+		lerpTargets.RL = lerpTargets.RL:Lerp(rlT, 0.15)
+		lerpTargets.LL = lerpTargets.LL:Lerp(llT, 0.15)
+
+		limbs.RA.CFrame = torso.CFrame * lerpTargets.RA
+		limbs.LA.CFrame = torso.CFrame * lerpTargets.LA
+		limbs.RL.CFrame = torso.CFrame * lerpTargets.RL
+		limbs.LL.CFrame = torso.CFrame * lerpTargets.LL
+
+		for _, limb in pairs(limbs) do limb.Velocity = Vector3.new(0, 0.1, 0) limb.CanCollide = false end
+	end)
+end
+
+-- GUI
+local screenGui = player.PlayerGui:FindFirstChild("MovementGUI") or Instance.new("ScreenGui", player.PlayerGui)
+screenGui.Name = "MovementGUI"; screenGui.ResetOnSpawn = false
+local function updateUI()
+	local rBtn, bBtn, sBtn = screenGui:FindFirstChild("RunToggle"), screenGui:FindFirstChild("BhopToggle"), screenGui:FindFirstChild("ShiftToggle")
+	if rBtn then rBtn.Text = isRunning and "RUN\nON" or "RUN\nOFF" end
+	if bBtn then bBtn.Text = autoBhop and "BHOP\nON" or "BHOP\nOFF" end
+	if sBtn then sBtn.Text = useShiftlock and "LOCK\nON" or "LOCK\nOFF" end
+end
+
+local function createBtn(name, pos, sizeMult)
+	local btn = screenGui:FindFirstChild(name) or Instance.new("TextButton", screenGui)
+	btn.Name = name
+	btn.Size = UDim2.new(0, 65 * (sizeMult or 1), 0, 65 * (sizeMult or 1))
+	btn.Position = pos
+	btn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	btn.TextColor3 = Color3.new(1,1,1)
+	btn.Font = "SourceSansBold"
+	btn.TextSize = 11 * (sizeMult or 1)
+	btn.BackgroundTransparency = 0.4
+	if not btn:FindFirstChildOfClass("UICorner") then Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0) end
+	return btn
+end
+
+-- Przyciski
+createBtn("RunToggle", UDim2.new(1, -90, 1, -260)).MouseButton1Click:Connect(function() isRunning = not isRunning updateUI() end)
+createBtn("BhopToggle", UDim2.new(1, -90, 1, -180)).MouseButton1Click:Connect(function() autoBhop = not autoBhop updateUI() end)
+createBtn("ShiftToggle", UDim2.new(1, -73, 1, -310), 0.5).MouseButton1Click:Connect(function() useShiftlock = not useShiftlock updateUI() end)
+
+-- Klawisze (PC)
+UserInputService.InputBegan:Connect(function(i, p) 
+	if p then return end 
+	if i.KeyCode == Enum.KeyCode.LeftShift then isRunning = not isRunning updateUI() 
+	elseif i.KeyCode == Enum.KeyCode.B then autoBhop = not autoBhop updateUI() 
+	elseif i.KeyCode == Enum.KeyCode.V then useShiftlock = not useShiftlock updateUI() end 
+end)
+
+updateUI()
+player.CharacterAdded:Connect(setupFECharacter)
+if player.Character then setupFECharacter(player.Character) end
