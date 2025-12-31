@@ -1,0 +1,161 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local TextChatService = game:GetService("TextChatService")
+
+local player = Players.LocalPlayer
+
+-- WYŁĄCZANIE STANDARDOWEGO CZATU
+TextChatService.ChatWindowConfiguration.Enabled = false
+TextChatService.BubbleChatConfiguration.Enabled = false
+
+-- KONFIGURACJA
+local CHAT_RANGE = 50 
+local MESSAGE_SPEED = 0.04 
+local MESSAGE_LIFETIME = 5
+
+-- GŁOSY
+local VOICES = {
+	{name = "Spamton", id = "rbxassetid://7995905344", speed = 0.7, waitAudio = false},
+	{name = "Susie",   id = "rbxassetid://6422551742", speed = 1.0, waitAudio = false},
+	{name = "Ralsei",  id = "rbxassetid://3620844678", speed = 1.0, waitAudio = false},
+	{name = "Gerson",  id = "rbxassetid://106955181662410", speed = 1.0, waitAudio = false},
+	{name = "Tenna",   id = "rbxassetid://93187346777650", speed = 1.0, waitAudio = true}, 
+	{name = "Gaster",  id = "rbxassetid://4742745849", speed = 1.0, waitAudio = true},  
+}
+
+local playerVoices = {}
+local activeMessageId = 0
+
+-- 1. TWORZENIE UI
+local function createUI()
+	local existing = player:WaitForChild("PlayerGui"):FindFirstChild("DeltaruneChatGui")
+	if existing then existing:Destroy() end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "DeltaruneChatGui"
+	screenGui.ResetOnSpawn = false 
+	screenGui.Parent = player:WaitForChild("PlayerGui")
+
+	local chatBox = Instance.new("Frame")
+	chatBox.Name = "ChatBox"
+	chatBox.Size = UDim2.new(0, 400, 0, 100)
+	-- POZYCJA PODNIESIONA (0.8 zamiast 0.85 przesuwa go w górę)
+	chatBox.Position = UDim2.new(0.5, 0, 0.8, -20) 
+	chatBox.AnchorPoint = Vector2.new(0.5, 0.5)
+	chatBox.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	chatBox.BackgroundTransparency = 1
+	chatBox.BorderSizePixel = 0
+	chatBox.Parent = screenGui
+
+	local boxStroke = Instance.new("UIStroke")
+	boxStroke.Color = Color3.fromRGB(255, 255, 255)
+	boxStroke.Thickness = 3
+	boxStroke.Transparency = 1
+	boxStroke.Parent = chatBox
+
+	local avatarImg = Instance.new("ImageLabel")
+	avatarImg.Name = "AvatarIcon"
+	avatarImg.Size = UDim2.new(0, 70, 0, 70)
+	avatarImg.Position = UDim2.new(0, 15, 0.5, 0)
+	avatarImg.AnchorPoint = Vector2.new(0, 0.5)
+	avatarImg.BackgroundTransparency = 1
+	avatarImg.ImageColor3 = Color3.fromRGB(80, 80, 80)
+	avatarImg.ImageTransparency = 1
+	avatarImg.Parent = chatBox
+
+	local textLabel = Instance.new("TextLabel")
+	textLabel.Name = "MsgText"
+	textLabel.Size = UDim2.new(1, -110, 1, -20)
+	textLabel.Position = UDim2.new(0, 100, 0, 10)
+	textLabel.BackgroundTransparency = 1
+	textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	textLabel.Font = Enum.Font.Arcade
+	textLabel.TextSize = 22
+	textLabel.TextXAlignment = Enum.TextXAlignment.Left
+	textLabel.TextYAlignment = Enum.TextYAlignment.Top
+	textLabel.TextWrapped = true
+	textLabel.Text = ""
+	textLabel.TextTransparency = 1
+	textLabel.Parent = chatBox
+
+	return chatBox
+end
+
+local chatBox = createUI()
+
+-- 2. LOGIKA GŁOSU
+local function getVoiceForPlayer(p)
+	if not playerVoices[p.UserId] then
+		playerVoices[p.UserId] = VOICES[math.random(1, #VOICES)]
+	end
+	return playerVoices[p.UserId]
+end
+
+-- 3. FUNKCJA WYŚWIETLANIA
+local function showChat(speaker, message)
+	activeMessageId = activeMessageId + 1
+	local currentId = activeMessageId
+	
+	local voice = getVoiceForPlayer(speaker)
+	local sound = Instance.new("Sound")
+	sound.SoundId = voice.id
+	sound.PlaybackSpeed = voice.speed
+	sound.Volume = 0.5
+	sound.Parent = game:GetService("SoundService")
+
+	chatBox.MsgText.Text = ""
+	chatBox.AvatarIcon.Image = Players:GetUserThumbnailAsync(speaker.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+	
+	TweenService:Create(chatBox, TweenInfo.new(0.2), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(chatBox.UIStroke, TweenInfo.new(0.2), {Transparency = 0}):Play()
+	TweenService:Create(chatBox.AvatarIcon, TweenInfo.new(0.2), {ImageTransparency = 0}):Play()
+	TweenService:Create(chatBox.MsgText, TweenInfo.new(0.2), {TextTransparency = 0}):Play()
+
+	local fullText = "* " .. message
+	
+	for i = 1, #fullText do
+		if currentId ~= activeMessageId then break end
+		
+		local char = string.sub(fullText, i, i)
+		chatBox.MsgText.Text = string.sub(fullText, 1, i)
+		
+		if char ~= " " then
+			if voice.waitAudio then
+				if not sound.IsPlaying then
+					sound:Play()
+				end
+			else
+				sound:Play()
+			end
+		end
+		
+		task.wait(MESSAGE_SPEED)
+	end
+	
+	sound:Stop()
+	sound:Destroy()
+
+	task.delay(MESSAGE_LIFETIME, function()
+		if currentId == activeMessageId then
+			TweenService:Create(chatBox, TweenInfo.new(0.5), {BackgroundTransparency = 1}):Play()
+			TweenService:Create(chatBox.UIStroke, TweenInfo.new(0.5), {Transparency = 1}):Play()
+			TweenService:Create(chatBox.AvatarIcon, TweenInfo.new(0.5), {ImageTransparency = 1}):Play()
+			TweenService:Create(chatBox.MsgText, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+		end
+	end)
+end
+
+-- 4. PODPIĘCIE
+local function setupPlayer(p)
+	p.Chatted:Connect(function(msg)
+		if player.Character and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+			local dist = (player.Character.HumanoidRootPart.Position - p.Character.HumanoidRootPart.Position).Magnitude
+			if dist <= CHAT_RANGE then
+				showChat(p, msg)
+			end
+		end
+	end)
+end
+
+for _, p in pairs(Players:GetPlayers()) do setupPlayer(p) end
+Players.PlayerAdded:Connect(setupPlayer)
