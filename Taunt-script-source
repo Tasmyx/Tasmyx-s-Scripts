@@ -199,16 +199,19 @@ tauntBtn.MouseButton1Click:Connect(function()
 			TweenService:Create(camera, TweenInfo.new(1.5), {FieldOfView = oldFOV}):Play()
 			isUsingAbility = false
 		else
+			-- JEŚLI PUDŁO
+			task.wait(0.7) -- Dźwięk faila 0.7s po ostatniej fazie
+			if isTaunting then
+				failSound:Play()
+				hitStreak = 0
+			end
+			
 			local timePassed = tick() - startTime
 			local remaining = tauntMaxTime - timePassed
-			if remaining > 0 then task.wait(remaining) end
+			if remaining > 0 then task.wait(remaining) end -- Czeka do końca 6s animacji
 			
-			task.wait(1) -- Dźwięk faila 1s po 6s animacji
-			if isTaunting then
-				hitStreak = 0; failSound:Play()
-				isTaunting = false; restoreJoints(); humanoid.WalkSpeed = 16
-				isUsingAbility = false
-			end
+			isTaunting = false; restoreJoints(); humanoid.WalkSpeed = 16
+			isUsingAbility = false
 		end
 		task.delay(7, function() onCooldownTaunt = false end)
 	end)
