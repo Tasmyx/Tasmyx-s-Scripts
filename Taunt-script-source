@@ -1,0 +1,186 @@
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local pgui = player:WaitForChild("PlayerGui")
+local camera = workspace.CurrentCamera
+local char = player.Character or player.CharacterAdded:Wait()
+local isAnimating = false
+local onCooldown = false
+local startTime = 0
+local duration = 5
+local cooldownDuration = 7
+local hitStreak = 0 
+
+-- GUI SETUP
+local screenGui = pgui:FindFirstChild("DeltaTauntVisible") or Instance.new("ScreenGui")
+screenGui.Name = "DeltaTauntVisible"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = pgui
+
+local button = screenGui:FindFirstChild("MainBtn") or Instance.new("TextButton")
+button.Name = "MainBtn"
+button.Parent = screenGui
+button.Size = UDim2.new(0, 100, 0, 100)
+-- Pozycja 0.7 Y i -10 pikseli w górę
+button.Position = UDim2.new(0.5, -50, 0.7, -10)
+button.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+button.BorderSizePixel = 0
+button.Text = "TAUNT"
+button.Font = Enum.Font.Arcade
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.TextScaled = true
+button.AutoButtonColor = false
+
+-- Outline (UIStroke)
+local stroke = button:FindFirstChild("UIStroke") or Instance.new("UIStroke", button)
+stroke.Thickness = 3
+stroke.Color = Color3.fromRGB(0, 0, 0)
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+local corner = button:FindFirstChild("UICorner") or Instance.new("UICorner", button)
+corner.CornerRadius = UDim.new(0, 10)
+
+-- Dźwięki
+local tauntSound = Instance.new("Sound", pgui)
+tauntSound.SoundId = "rbxassetid://108614786727784"
+
+local hitSound = Instance.new("Sound", pgui)
+hitSound.SoundId = "rbxassetid://97113622160405"
+
+local failSound = Instance.new("Sound", pgui)
+failSound.SoundId = "rbxassetid://127614493691795"
+
+local function restoreJoints(torso, limbs)
+	local function makeJoint(name, p0, p1, c0, c1)
+		local j = Instance.new("Motor6D")
+		j.Name = name
+		j.Part0 = p0
+		j.Part1 = p1
+		j.C0 = c0
+		j.C1 = c1
+		j.Parent = p0
+	end
+	makeJoint("Right Shoulder", torso, limbs.ra, CFrame.new(1, 0.5, 0) * CFrame.Angles(0, math.rad(90), 0), CFrame.new(-0.5, 0.5, 0) * CFrame.Angles(0, math.rad(90), 0))
+	makeJoint("Left Shoulder", torso, limbs.la, CFrame.new(-1, 0.5, 0) * CFrame.Angles(0, math.rad(-90), 0), CFrame.new(0.5, 0.5, 0) * CFrame.Angles(0, math.rad(-90), 0))
+	makeJoint("Right Hip", torso, limbs.rl, CFrame.new(1, -1, 0) * CFrame.Angles(0, math.rad(90), 0), CFrame.new(0.5, 1, 0) * CFrame.Angles(0, math.rad(90), 0))
+	makeJoint("Left Hip", torso, limbs.ll, CFrame.new(-1, -1, 0) * CFrame.Angles(0, math.rad(-90), 0), CFrame.new(-0.5, 1, 0) * CFrame.Angles(0, math.rad(-90), 0))
+end
+
+local function setLimbPivot(limb, torsoCFrame, offsetFromTorso, rotation)
+	if limb and limb.Parent then
+		local pivotOffset = CFrame.new(0, -0.5, 0) 
+		limb.CFrame = torsoCFrame * offsetFromTorso * rotation * pivotOffset
+		limb.Velocity = Vector3.new(0, 0.1, 0)
+	end
+end
+
+local function checkNearbyPlayers(radius)
+	local myTorso = char:FindFirstChild("Torso")
+	if not myTorso then return false end
+	for _, otherPlayer in pairs(Players:GetPlayers()) do
+		if otherPlayer ~= player and otherPlayer.Character and otherPlayer.Character:FindFirstChild("Torso") then
+			local dist = (myTorso.Position - otherPlayer.Character.Torso.Position).Magnitude
+			if dist <= radius then return true end
+		end
+	end
+	return false
+end
+
+local function applyBoosts()
+	local humanoid = char:FindFirstChild("Humanoid")
+	if not humanoid then return end
+	
+	-- Streak Logic: Start 1.0, +0.1 per hit, Max 1.5
+	local currentPitch = 1 + (hitStreak * 0.1)
+	if currentPitch > 1.5 then currentPitch = 1.5 end
+	
+	hitSound.PlaybackSpeed = currentPitch
+	hitSound:Play()
+	hitStreak = hitStreak + 1
+
+	local baseSpeed = 16
+	local targetSpeed = baseSpeed * 1.5
+	local baseFOV = camera.FieldOfView
+	local targetFOV = baseFOV * 1.25
+
+	humanoid.WalkSpeed = targetSpeed
+	TweenService:Create(camera, TweenInfo.new(0.5), {FieldOfView = targetFOV}):Play()
+
+	task.delay(5, function()
+		TweenService:Create(humanoid, TweenInfo.new(1.5), {WalkSpeed = baseSpeed}):Play()
+		TweenService:Create(camera, TweenInfo.new(1.5), {FieldOfView = baseFOV}):Play()
+	end)
+end
+
+RunService.RenderStepped:Connect(function()
+	if not isAnimating or not char or not char:FindFirstChild("Torso") then return end
+	local torso = char.Torso
+	local humanoid = char:FindFirstChild("Humanoid")
+	local elapsed = tick() - startTime
+	local limbs = {ra = char:FindFirstChild("Right Arm"), la = char:FindFirstChild("Left Arm"), rl = char:FindFirstChild("Right Leg"), ll = char:FindFirstChild("Left Leg")}
+
+	if elapsed > duration then
+		isAnimating = false
+		humanoid.WalkSpeed = 16
+		restoreJoints(torso, limbs)
+		return
+	end
+
+	humanoid.WalkSpeed = 0
+	local wave = math.sin(elapsed * 20) * math.rad(45)
+	if limbs.ra and limbs.la and limbs.rl and limbs.ll then
+		setLimbPivot(limbs.ra, torso.CFrame, CFrame.new(1.5, 0.5, 0), CFrame.Angles(math.rad(180) + wave, 0, 0))
+		setLimbPivot(limbs.la, torso.CFrame, CFrame.new(-1.5, 0.5, 0), CFrame.Angles(math.rad(180) - wave, 0, 0))
+		setLimbPivot(limbs.rl, torso.CFrame, CFrame.new(0.5, -1.5, 0), CFrame.Angles(-wave, 0, 0))
+		setLimbPivot(limbs.ll, torso.CFrame, CFrame.new(-0.5, -1.5, 0), CFrame.Angles(wave, 0, 0))
+	end
+end)
+
+button.MouseButton1Click:Connect(function()
+	if isAnimating or onCooldown then return end
+	char = player.Character
+	local torso = char and char:FindFirstChild("Torso")
+	local humanoid = char and char:FindFirstChild("Humanoid")
+	if not torso or not humanoid then return end
+
+	onCooldown = true
+	isAnimating = true
+	startTime = tick()
+	tauntSound:Play()
+	
+	-- Dark Cooldown Visual
+	button.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	button.TextColor3 = Color3.fromRGB(50, 50, 50)
+	TweenService:Create(button, TweenInfo.new(cooldownDuration), {BackgroundColor3 = Color3.fromRGB(80, 80, 80)}):Play()
+	TweenService:Create(button, TweenInfo.new(cooldownDuration), {TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+
+	local joints = {"Right Shoulder", "Left Shoulder", "Right Hip", "Left Hip"}
+	for _, n in pairs(joints) do if torso:FindFirstChild(n) then torso[n]:Destroy() end end
+
+	local hitDetected = false
+	
+	task.spawn(function()
+		for i, radius in ipairs({3, 6, 9}) do
+			task.wait(0.7)
+			if not isAnimating then break end
+			if checkNearbyPlayers(radius) then
+				hitDetected = true
+				isAnimating = false
+				tauntSound:Stop()
+				restoreJoints(torso, {ra = char["Right Arm"], la = char["Left Arm"], rl = char["Right Leg"], ll = char["Left Leg"]})
+				applyBoosts()
+				break
+			end
+		end
+		
+		if not hitDetected then
+			hitStreak = 0 
+			task.wait(1)
+			if not hitDetected then failSound:Play() end
+		end
+	end)
+
+	task.delay(cooldownDuration, function() onCooldown = false end)
+end)
