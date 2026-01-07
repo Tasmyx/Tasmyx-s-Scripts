@@ -1,10 +1,134 @@
--- ... (wcześniejsza część setupu pozostaje bez zmian)
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local pgui = player:WaitForChild("PlayerGui")
+local camera = workspace.CurrentCamera
+
+-- Zmienne stanu
+local char, torso, humanoid
+local isTaunting = false
+local isAdrenaline = false
+local isUsingAbility = false -- Globalna blokada akcji
+local onCooldownAdrenaline = false
+local onCooldownTaunt = false
+
+local hitStreak = 0 
+local startTime = 0
+local adrenalineCooldownTime = 15
+
+-- Funkcja odświeżająca postać po odrodzeniu
+local function setupCharacter(newChar)
+	char = newChar
+	torso = char:WaitForChild("Torso")
+	humanoid = char:WaitForChild("Humanoid")
+	isTaunting = false
+	isAdrenaline = false
+	isUsingAbility = false
+end
+
+player.CharacterAdded:Connect(setupCharacter)
+if player.Character then setupCharacter(player.Character) end
+
+-- GUI SETUP
+local screenGui = pgui:FindFirstChild("DeltaAbilityGui") or Instance.new("ScreenGui")
+screenGui.Name = "DeltaAbilityGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = pgui
+
+local container = screenGui:FindFirstChild("BtnContainer") or Instance.new("Frame")
+container.Name = "BtnContainer"
+container.Size = UDim2.new(0, 210, 0, 100)
+container.Position = UDim2.new(0.5, -105, 0.7, -10)
+container.BackgroundTransparency = 1
+container.Parent = screenGui
+
+local function createStyledButton(name, text, pos)
+	local btn = container:FindFirstChild(name) or Instance.new("TextButton")
+	btn.Name = name
+	btn.Size = UDim2.new(0, 100, 0, 100)
+	btn.Position = pos
+	btn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+	btn.Text = text
+	btn.Font = Enum.Font.Arcade
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.TextScaled = true
+	btn.BorderSizePixel = 0
+	btn.Parent = container
+	if not btn:FindFirstChild("UIStroke") then
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
+		local s = Instance.new("UIStroke", btn)
+		s.Thickness = 3
+		s.Color = Color3.fromRGB(0, 0, 0)
+	end
+	return btn
+end
+
+local tauntBtn = createStyledButton("TauntBtn", "TAUNT", UDim2.new(0, 0, 0, 0))
+local adrenalineBtn = createStyledButton("AdrenalineBtn", "ADRENALINE", UDim2.new(0, 110, 0, 0))
+
+-- Dźwięki
+local function getSnd(id)
+	local s = Instance.new("Sound", pgui)
+	s.SoundId = "rbxassetid://" .. id
+	return s
+end
+
+local tauntSound = getSnd("108614786727784")
+local hitSound = getSnd("97113622160405")
+local failSound = getSnd("127614493691795")
+local adrStartSnd = getSnd("72676700836497")
+local adrEndSnd = getSnd("129528425379076")
+
+local function restoreJoints()
+	if not char or not torso then return end
+	local limbs = {ra = char:FindFirstChild("Right Arm"), la = char:FindFirstChild("Left Arm"), rl = char:FindFirstChild("Right Leg"), ll = char:FindFirstChild("Left Leg")}
+	if not limbs.ra then return end
+	local function make(n, p0, p1, c0, c1)
+		local j = torso:FindFirstChild(n) or Instance.new("Motor6D")
+		j.Name = n; j.Part0 = p0; j.Part1 = p1; j.C0 = c0; j.C1 = c1; j.Parent = p0
+	end
+	make("Right Shoulder", torso, limbs.ra, CFrame.new(1, 0.5, 0) * CFrame.Angles(0, math.rad(90), 0), CFrame.new(-0.5, 0.5, 0) * CFrame.Angles(0, math.rad(90), 0))
+	make("Left Shoulder", torso, limbs.la, CFrame.new(-1, 0.5, 0) * CFrame.Angles(0, math.rad(-90), 0), CFrame.new(0.5, 0.5, 0) * CFrame.Angles(0, math.rad(-90), 0))
+	make("Right Hip", torso, limbs.rl, CFrame.new(1, -1, 0) * CFrame.Angles(0, math.rad(90), 0), CFrame.new(0.5, 1, 0) * CFrame.Angles(0, math.rad(90), 0))
+	make("Left Hip", torso, limbs.ll, CFrame.new(-1, -1, 0) * CFrame.Angles(0, math.rad(-90), 0), CFrame.new(-0.5, 1, 0) * CFrame.Angles(0, math.rad(-90), 0))
+end
+
+local function setLimb(limb, torsoCF, offset, rot)
+	if limb and limb.Parent and torsoCF then
+		limb.CFrame = torsoCF * offset * rot * CFrame.new(0, -0.5, 0)
+	end
+end
+
+-- RENDER STEPPED (Animacje)
+RunService.RenderStepped:Connect(function()
+	if not char or not torso or not torso.Parent then return end
+	local cf = torso.CFrame
+	
+	if isTaunting then
+		local wave = math.sin((tick() - startTime) * 20) * math.rad(45)
+		setLimb(char:FindFirstChild("Right Arm"), cf, CFrame.new(1.5, 0.5, 0), CFrame.Angles(math.rad(180) + wave, 0, 0))
+		setLimb(char:FindFirstChild("Left Arm"), cf, CFrame.new(-1.5, 0.5, 0), CFrame.Angles(math.rad(180) - wave, 0, 0))
+		setLimb(char:FindFirstChild("Right Leg"), cf, CFrame.new(0.5, -1.5, 0), CFrame.Angles(-wave, 0, 0))
+		setLimb(char:FindFirstChild("Left Leg"), cf, CFrame.new(-0.5, -1.5, 0), CFrame.Angles(wave, 0, 0))
+	elseif isAdrenaline then
+		local e = tick() - startTime
+		local up, stay, down = 0.5, 1.0, 0.5
+		local alpha = 0
+		if e <= up then alpha = e/up
+		elseif e <= up+stay then alpha = 1
+		elseif e <= up+stay+down then alpha = 1-((e-up-stay)/down) end
+		
+		local rX, rZ = math.rad(240)*alpha, math.rad(15)*alpha
+		setLimb(char:FindFirstChild("Right Arm"), cf, CFrame.new(1.5, 0.5, 0), CFrame.Angles(rX, 0, rZ))
+		setLimb(char:FindFirstChild("Left Arm"), cf, CFrame.new(-1.5, 0.5, 0), CFrame.Angles(rX, 0, -rZ))
+	end
+end)
 
 -- LOGIKA ADRENALINY
 adrenalineBtn.MouseButton1Click:Connect(function()
-	-- Blokada: jeśli jakakolwiek zdolność jest aktywna (animacja lub boosty), nie pozwól na start
-	if isUsingAbility or onCooldownAdrenaline or isTaunting or isAdrenaline or (humanoid and humanoid.WalkSpeed ~= 16) then return end
-	
+	if isUsingAbility or onCooldownAdrenaline or isTaunting or not humanoid or humanoid.Health <= 0 then return end
 	isUsingAbility, isAdrenaline, onCooldownAdrenaline, startTime = true, true, true, tick()
 	adrStartSnd:Play()
 	
@@ -18,28 +142,25 @@ adrenalineBtn.MouseButton1Click:Connect(function()
 	local oldFOV = camera.FieldOfView
 	TweenService:Create(camera, TweenInfo.new(0.5), {FieldOfView = oldFOV * 1.35}):Play()
 	
-	task.delay(2, function() 
+	task.delay(2, function() -- Czas trwania animacji rąk (0.5 + 1 + 0.5)
 		isAdrenaline = false
 		restoreJoints()
-		-- isUsingAbility zostanie wyłączone dopiero po skończeniu całego efektu (stun)
 	end)
 
-	task.delay(7, function()
+	task.delay(7, function() -- Koniec speed boosta
 		humanoid.WalkSpeed = 0
 		adrEndSnd:Play()
 		TweenService:Create(camera, TweenInfo.new(1), {FieldOfView = oldFOV}):Play()
-		task.wait(3)
+		task.wait(3) -- Stun
 		humanoid.WalkSpeed = 16
-		isUsingAbility = false -- Teraz można użyć kolejnej zdolności
+		isUsingAbility = false
 		task.delay(adrenalineCooldownTime - 10, function() onCooldownAdrenaline = false end)
 	end)
 end)
 
 -- LOGIKA TAUNTA
 tauntBtn.MouseButton1Click:Connect(function()
-	-- Blokada: nie pozwól użyć, jeśli adrenalina lub inny taunt trwa
-	if isUsingAbility or onCooldownTaunt or isAdrenaline or isTaunting or (humanoid and humanoid.WalkSpeed ~= 16) then return end
-	
+	if isUsingAbility or onCooldownTaunt or isAdrenaline or not humanoid or humanoid.Health <= 0 then return end
 	isUsingAbility, isTaunting, onCooldownTaunt, startTime = true, true, true, tick()
 	tauntSound:Play()
 	humanoid.WalkSpeed = 0
@@ -55,7 +176,6 @@ tauntBtn.MouseButton1Click:Connect(function()
 		local hitDetected = false
 		local radii = {3, 6, 9}
 
-		-- 3 Fazy co 0.7 sekundy
 		for i = 1, 3 do
 			task.wait(0.7)
 			if not isTaunting then break end
@@ -76,24 +196,18 @@ tauntBtn.MouseButton1Click:Connect(function()
 			humanoid.WalkSpeed = 24
 			local oldFOV = camera.FieldOfView
 			TweenService:Create(camera, TweenInfo.new(0.5), {FieldOfView = oldFOV * 1.25}):Play()
-			
-			task.wait(5) -- Trwanie speed boosta
+			task.wait(5)
 			humanoid.WalkSpeed = 16
 			TweenService:Create(camera, TweenInfo.new(1.5), {FieldOfView = oldFOV}):Play()
 			isUsingAbility = false
 		else
-			-- PUDŁO: Czekamy 1 sekundę po ostatniej fazie (tak jak w opisie)
-			task.wait(1)
+			task.wait(1) -- Czekaj 1s po 3 fazie
 			if isTaunting then
-				hitStreak = 0
-				failSound:Play()
-				isTaunting = false
-				restoreJoints()
-				humanoid.WalkSpeed = 16
+				hitStreak = 0; failSound:Play()
+				isTaunting = false; restoreJoints(); humanoid.WalkSpeed = 16
 				isUsingAbility = false
 			end
 		end
-		
 		task.delay(7, function() onCooldownTaunt = false end)
 	end)
 end)
