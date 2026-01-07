@@ -5,62 +5,86 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local pgui = player:WaitForChild("PlayerGui")
 local camera = workspace.CurrentCamera
-local char = player.Character or player.CharacterAdded:Wait()
-local isAnimating = false
-local onCooldown = false
-local startTime = 0
-local duration = 5
-local cooldownDuration = 7
-local hitStreak = 0 
 
--- GUI SETUP
-local screenGui = pgui:FindFirstChild("DeltaTauntVisible") or Instance.new("ScreenGui")
-screenGui.Name = "DeltaTauntVisible"
+-- Zmienne stanu
+local char, torso, humanoid
+local isTaunting = false
+local isAdrenaline = false
+local anyAbilityActive = false 
+local hitStreak = 0 
+local startTime = 0
+local adrenalineCooldownTime = 15
+
+-- Funkcja odświeżająca postać po śmierci
+local function setupCharacter(newChar)
+	char = newChar
+	torso = char:WaitForChild("Torso")
+	humanoid = char:WaitForChild("Humanoid")
+	-- Resetujemy stany przy spawnie, żeby nic się nie zacięło
+	isTaunting = false
+	isAdrenaline = false
+	anyAbilityActive = false
+end
+
+player.CharacterAdded:Connect(setupCharacter)
+if player.Character then setupCharacter(player.Character) end
+
+-- GUI SETUP (ResetOnSpawn = false jest kluczowe)
+local screenGui = pgui:FindFirstChild("DeltaAbilityGui") or Instance.new("ScreenGui")
+screenGui.Name = "DeltaAbilityGui"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = pgui
 
-local button = screenGui:FindFirstChild("MainBtn") or Instance.new("TextButton")
-button.Name = "MainBtn"
-button.Parent = screenGui
-button.Size = UDim2.new(0, 100, 0, 100)
--- Pozycja 0.7 Y i -10 pikseli w górę
-button.Position = UDim2.new(0.5, -50, 0.7, -10)
-button.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-button.BorderSizePixel = 0
-button.Text = "TAUNT"
-button.Font = Enum.Font.Arcade
-button.TextColor3 = Color3.fromRGB(255, 255, 255)
-button.TextScaled = true
-button.AutoButtonColor = false
+local container = screenGui:FindFirstChild("BtnContainer") or Instance.new("Frame")
+container.Name = "BtnContainer"
+container.Size = UDim2.new(0, 210, 0, 100)
+container.Position = UDim2.new(0.5, -105, 0.7, -10)
+container.BackgroundTransparency = 1
+container.Parent = screenGui
 
--- Outline (UIStroke)
-local stroke = button:FindFirstChild("UIStroke") or Instance.new("UIStroke", button)
-stroke.Thickness = 3
-stroke.Color = Color3.fromRGB(0, 0, 0)
-stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+local function createStyledButton(name, text, pos)
+	local btn = container:FindFirstChild(name) or Instance.new("TextButton")
+	btn.Name = name
+	btn.Size = UDim2.new(0, 100, 0, 100)
+	btn.Position = pos
+	btn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+	btn.Text = text
+	btn.Font = Enum.Font.Arcade
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.TextScaled = true
+	btn.BorderSizePixel = 0
+	btn.Parent = container
+	if not btn:FindFirstChild("UICorner") then Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10) end
+	local stroke = btn:FindFirstChild("UIStroke") or Instance.new("UIStroke", btn)
+	stroke.Thickness = 3
+	stroke.Color = Color3.fromRGB(0, 0, 0)
+	return btn
+end
 
-local corner = button:FindFirstChild("UICorner") or Instance.new("UICorner", button)
-corner.CornerRadius = UDim.new(0, 10)
+local tauntBtn = createStyledButton("TauntBtn", "TAUNT", UDim2.new(0, 0, 0, 0))
+local adrenalineBtn = createStyledButton("AdrenalineBtn", "ADRENALINE", UDim2.new(0, 110, 0, 0))
 
 -- Dźwięki
-local tauntSound = Instance.new("Sound", pgui)
-tauntSound.SoundId = "rbxassetid://108614786727784"
+local function createSound(id)
+	local s = Instance.new("Sound", pgui)
+	s.SoundId = "rbxassetid://" .. id
+	return s
+end
 
-local hitSound = Instance.new("Sound", pgui)
-hitSound.SoundId = "rbxassetid://97113622160405"
+local tauntSound = createSound("108614786727784")
+local hitSound = createSound("97113622160405")
+local failSound = createSound("127614493691795")
+local adrenalineStartSound = createSound("72676700836497")
+local adrenalineEndSound = createSound("129528425379076")
 
-local failSound = Instance.new("Sound", pgui)
-failSound.SoundId = "rbxassetid://127614493691795"
-
-local function restoreJoints(torso, limbs)
+local function restoreJoints()
+	if not char or not torso then return end
+	local limbs = {ra = char:FindFirstChild("Right Arm"), la = char:FindFirstChild("Left Arm"), rl = char:FindFirstChild("Right Leg"), ll = char:FindFirstChild("Left Leg")}
+	if not limbs.ra then return end
+	
 	local function makeJoint(name, p0, p1, c0, c1)
-		local j = Instance.new("Motor6D")
-		j.Name = name
-		j.Part0 = p0
-		j.Part1 = p1
-		j.C0 = c0
-		j.C1 = c1
-		j.Parent = p0
+		local j = torso:FindFirstChild(name) or Instance.new("Motor6D")
+		j.Name = name; j.Part0 = p0; j.Part1 = p1; j.C0 = c0; j.C1 = c1; j.Parent = p0
 	end
 	makeJoint("Right Shoulder", torso, limbs.ra, CFrame.new(1, 0.5, 0) * CFrame.Angles(0, math.rad(90), 0), CFrame.new(-0.5, 0.5, 0) * CFrame.Angles(0, math.rad(90), 0))
 	makeJoint("Left Shoulder", torso, limbs.la, CFrame.new(-1, 0.5, 0) * CFrame.Angles(0, math.rad(-90), 0), CFrame.new(0.5, 0.5, 0) * CFrame.Angles(0, math.rad(-90), 0))
@@ -69,118 +93,108 @@ local function restoreJoints(torso, limbs)
 end
 
 local function setLimbPivot(limb, torsoCFrame, offsetFromTorso, rotation)
-	if limb and limb.Parent then
-		local pivotOffset = CFrame.new(0, -0.5, 0) 
-		limb.CFrame = torsoCFrame * offsetFromTorso * rotation * pivotOffset
+	if limb and limb.Parent and torsoCFrame then
+		limb.CFrame = torsoCFrame * offsetFromTorso * rotation * CFrame.new(0, -0.5, 0)
 		limb.Velocity = Vector3.new(0, 0.1, 0)
 	end
 end
 
-local function checkNearbyPlayers(radius)
-	local myTorso = char:FindFirstChild("Torso")
-	if not myTorso then return false end
-	for _, otherPlayer in pairs(Players:GetPlayers()) do
-		if otherPlayer ~= player and otherPlayer.Character and otherPlayer.Character:FindFirstChild("Torso") then
-			local dist = (myTorso.Position - otherPlayer.Character.Torso.Position).Magnitude
-			if dist <= radius then return true end
-		end
-	end
-	return false
-end
-
-local function applyBoosts()
-	local humanoid = char:FindFirstChild("Humanoid")
-	if not humanoid then return end
-	
-	-- Streak Logic: Start 1.0, +0.1 per hit, Max 1.5
-	local currentPitch = 1 + (hitStreak * 0.1)
-	if currentPitch > 1.5 then currentPitch = 1.5 end
-	
-	hitSound.PlaybackSpeed = currentPitch
-	hitSound:Play()
-	hitStreak = hitStreak + 1
-
-	local baseSpeed = 16
-	local targetSpeed = baseSpeed * 1.5
-	local baseFOV = camera.FieldOfView
-	local targetFOV = baseFOV * 1.25
-
-	humanoid.WalkSpeed = targetSpeed
-	TweenService:Create(camera, TweenInfo.new(0.5), {FieldOfView = targetFOV}):Play()
-
-	task.delay(5, function()
-		TweenService:Create(humanoid, TweenInfo.new(1.5), {WalkSpeed = baseSpeed}):Play()
-		TweenService:Create(camera, TweenInfo.new(1.5), {FieldOfView = baseFOV}):Play()
-	end)
-end
-
+-- RENDER STEPPED
 RunService.RenderStepped:Connect(function()
-	if not isAnimating or not char or not char:FindFirstChild("Torso") then return end
-	local torso = char.Torso
-	local humanoid = char:FindFirstChild("Humanoid")
-	local elapsed = tick() - startTime
-	local limbs = {ra = char:FindFirstChild("Right Arm"), la = char:FindFirstChild("Left Arm"), rl = char:FindFirstChild("Right Leg"), ll = char:FindFirstChild("Left Leg")}
+	if not char or not torso or not torso.Parent then return end
+	
+	if isTaunting then
+		local elapsed = tick() - startTime
+		local wave = math.sin(elapsed * 20) * math.rad(45)
+		setLimbPivot(char:FindFirstChild("Right Arm"), torso.CFrame, CFrame.new(1.5, 0.5, 0), CFrame.Angles(math.rad(180) + wave, 0, 0))
+		setLimbPivot(char:FindFirstChild("Left Arm"), torso.CFrame, CFrame.new(-1.5, 0.5, 0), CFrame.Angles(math.rad(180) - wave, 0, 0))
+		setLimbPivot(char:FindFirstChild("Right Leg"), torso.CFrame, CFrame.new(0.5, -1.5, 0), CFrame.Angles(-wave, 0, 0))
+		setLimbPivot(char:FindFirstChild("Left Leg"), torso.CFrame, CFrame.new(-0.5, -1.5, 0), CFrame.Angles(wave, 0, 0))
+	elseif isAdrenaline then
+		local elapsed = tick() - startTime
+		local upTime, stayTime, downTime = 0.5, 1.0, 0.5
+		local alpha = 0
 
-	if elapsed > duration then
-		isAnimating = false
-		humanoid.WalkSpeed = 16
-		restoreJoints(torso, limbs)
-		return
-	end
-
-	humanoid.WalkSpeed = 0
-	local wave = math.sin(elapsed * 20) * math.rad(45)
-	if limbs.ra and limbs.la and limbs.rl and limbs.ll then
-		setLimbPivot(limbs.ra, torso.CFrame, CFrame.new(1.5, 0.5, 0), CFrame.Angles(math.rad(180) + wave, 0, 0))
-		setLimbPivot(limbs.la, torso.CFrame, CFrame.new(-1.5, 0.5, 0), CFrame.Angles(math.rad(180) - wave, 0, 0))
-		setLimbPivot(limbs.rl, torso.CFrame, CFrame.new(0.5, -1.5, 0), CFrame.Angles(-wave, 0, 0))
-		setLimbPivot(limbs.ll, torso.CFrame, CFrame.new(-0.5, -1.5, 0), CFrame.Angles(wave, 0, 0))
+		if elapsed <= upTime then alpha = elapsed / upTime
+		elseif elapsed <= (upTime + stayTime) then alpha = 1
+		elseif elapsed <= (upTime + stayTime + downTime) then alpha = 1 - ((elapsed - upTime - stayTime) / downTime) end
+		
+		local rotX, rotZ = math.rad(240) * alpha, math.rad(15) * alpha
+		setLimbPivot(char:FindFirstChild("Right Arm"), torso.CFrame, CFrame.new(1.5, 0.5, 0), CFrame.Angles(rotX, 0, rotZ))
+		setLimbPivot(char:FindFirstChild("Left Arm"), torso.CFrame, CFrame.new(-1.5, 0.5, 0), CFrame.Angles(rotX, 0, -rotZ))
 	end
 end)
 
-button.MouseButton1Click:Connect(function()
-	if isAnimating or onCooldown then return end
-	char = player.Character
-	local torso = char and char:FindFirstChild("Torso")
-	local humanoid = char and char:FindFirstChild("Humanoid")
-	if not torso or not humanoid then return end
-
-	onCooldown = true
-	isAnimating = true
-	startTime = tick()
-	tauntSound:Play()
+-- ADRENALINA
+adrenalineBtn.MouseButton1Click:Connect(function()
+	if anyAbilityActive or not humanoid or humanoid.Health <= 0 then return end
+	anyAbilityActive, isAdrenaline, startTime = true, true, tick()
+	adrenalineStartSound:Play()
 	
-	-- Dark Cooldown Visual
-	button.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	button.TextColor3 = Color3.fromRGB(50, 50, 50)
-	TweenService:Create(button, TweenInfo.new(cooldownDuration), {BackgroundColor3 = Color3.fromRGB(80, 80, 80)}):Play()
-	TweenService:Create(button, TweenInfo.new(cooldownDuration), {TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+	adrenalineBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	TweenService:Create(adrenalineBtn, TweenInfo.new(adrenalineCooldownTime), {BackgroundColor3 = Color3.fromRGB(80, 80, 80)}):Play()
+
+	if torso:FindFirstChild("Right Shoulder") then torso["Right Shoulder"]:Destroy() end
+	if torso:FindFirstChild("Left Shoulder") then torso["Left Shoulder"]:Destroy() end
+
+	humanoid.WalkSpeed = 32
+	local oldFOV = camera.FieldOfView
+	TweenService:Create(camera, TweenInfo.new(0.5), {FieldOfView = oldFOV * 1.35}):Play()
+	
+	task.delay(2, function() isAdrenaline = false; restoreJoints() end)
+	task.delay(7, function()
+		if humanoid then humanoid.WalkSpeed = 0 end
+		adrenalineEndSound:Play()
+		TweenService:Create(camera, TweenInfo.new(1), {FieldOfView = oldFOV}):Play()
+		task.wait(3)
+		if humanoid then humanoid.WalkSpeed = 16 end
+		task.delay(adrenalineCooldownTime - 10, function() anyAbilityActive = false end)
+	end)
+end)
+
+-- TAUNT
+tauntBtn.MouseButton1Click:Connect(function()
+	if anyAbilityActive or not humanoid or humanoid.Health <= 0 then return end
+	anyAbilityActive, isTaunting, startTime = true, true, tick()
+	tauntSound:Play()
+	humanoid.WalkSpeed = 0
+	
+	tauntBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	TweenService:Create(tauntBtn, TweenInfo.new(7), {BackgroundColor3 = Color3.fromRGB(80, 80, 80)}):Play()
 
 	local joints = {"Right Shoulder", "Left Shoulder", "Right Hip", "Left Hip"}
 	for _, n in pairs(joints) do if torso:FindFirstChild(n) then torso[n]:Destroy() end end
 
-	local hitDetected = false
-	
 	task.spawn(function()
-		for i, radius in ipairs({3, 6, 9}) do
+		local hitDetected = false
+		for _, radius in ipairs({3, 6, 9}) do
 			task.wait(0.7)
-			if not isAnimating then break end
-			if checkNearbyPlayers(radius) then
-				hitDetected = true
-				isAnimating = false
-				tauntSound:Stop()
-				restoreJoints(torso, {ra = char["Right Arm"], la = char["Left Arm"], rl = char["Right Leg"], ll = char["Left Leg"]})
-				applyBoosts()
+			if not isTaunting or not torso then break end
+			for _, other in pairs(Players:GetPlayers()) do
+				if other ~= player and other.Character and other.Character:FindFirstChild("Torso") then
+					if (torso.Position - other.Character.Torso.Position).Magnitude <= radius then
+						hitDetected = true; break
+					end
+				end
+			end
+			if hitDetected then
+				isTaunting = false; tauntSound:Stop(); restoreJoints()
+				hitSound.PlaybackSpeed = math.min(1 + (hitStreak * 0.1), 1.5); hitSound:Play()
+				hitStreak = hitStreak + 1; humanoid.WalkSpeed = 24
+				local oldFOV = camera.FieldOfView
+				TweenService:Create(camera, TweenInfo.new(0.5), {FieldOfView = oldFOV * 1.25}):Play()
+				task.delay(5, function()
+					if humanoid then humanoid.WalkSpeed = 16 end
+					TweenService:Create(camera, TweenInfo.new(1.5), {FieldOfView = oldFOV}):Play()
+					anyAbilityActive = false
+				end)
 				break
 			end
 		end
-		
 		if not hitDetected then
-			hitStreak = 0 
-			task.wait(1)
-			if not hitDetected then failSound:Play() end
+			hitStreak = 0; task.wait(1); failSound:Play()
+			isTaunting = false; restoreJoints(); if humanoid then humanoid.WalkSpeed = 16 end
+			anyAbilityActive = false
 		end
 	end)
-
-	task.delay(cooldownDuration, function() onCooldown = false end)
 end)
