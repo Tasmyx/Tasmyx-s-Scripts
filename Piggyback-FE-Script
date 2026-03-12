@@ -1,7 +1,7 @@
 --[[
-    [FE] Simple Piggyback System - Server Sided Visibility
+    [FE] Ultra-Advanced Piggyback System with Distance Check
     Executor: Delta (Mobile/Android)
-    Logic: Uses standard Sit for server replication and Heartbeat for position.
+    Distance Limit: 15 Studs
 ]]
 
 local Players = game:GetService("Players")
@@ -13,121 +13,238 @@ local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
+-- Konfiguracja Systemowa
 local CONFIG = {
     HighlightColor = Color3.fromRGB(0, 255, 127),
     HighlightOutline = Color3.fromRGB(255, 255, 255),
-    RideOffset = CFrame.new(0, 1.4, 0.8), -- Twoja wysokość (+0.2)
-    MaxClickDistance = 150,
-    SitDistance = 15,
-    ButtonColor = Color3.fromRGB(255, 50, 50)
+    RideOffset = CFrame.new(0, 1.5, 0.8),
+    MaxClickDistance = 150, -- Jak daleko możesz go w ogóle zaznaczyć
+    SitDistance = 15,       -- Maksymalny dystans, aby faktycznie usiąść
+    ButtonColor = Color3.fromRGB(255, 50, 50),
 }
 
-local Piggyback = {
+-------------------------------------------------------------------------------
+-- [ KLASA: Janitor ] - Zarządzanie pamięcią i sprzątanie obiektów
+-------------------------------------------------------------------------------
+local Janitor = {}
+Janitor.__index = Janitor
+
+function Janitor.new()
+    return setmetatable({ _tasks = {} }, Janitor)
+end
+
+function Janitor:Add(task, method)
+    table.insert(self._tasks, { Task = task, Method = method })
+    return task
+end
+
+function Janitor:Cleanup()
+    for i = #self._tasks, 1, -1 do
+        local t = self._tasks[i]
+        if typeof(t.Task) == "RBXScriptConnection" then t.Task:Disconnect()
+        elseif typeof(t.Task) == "Instance" then t.Task:Destroy()
+        elseif type(t.Task) == "function" then t.Task() end
+        self._tasks[i] = nil
+    end
+end
+
+-------------------------------------------------------------------------------
+-- [ SYSTEM: PiggybackController ]
+-------------------------------------------------------------------------------
+local PiggybackController = {
     Target = nil,
     IsRiding = false,
     SelectionState = 0,
-    Connections = {},
-    Visuals = {}
+    MainJanitor = Janitor.new(),
+    RideJanitor = Janitor.new(),
+    VisualJanitor = Janitor.new()
 }
 
-function Piggyback:Cleanup()
-    for _, conn in pairs(self.Connections) do conn:Disconnect() end
-    self.Connections = {}
+-- Funkcja sprawdzająca dystans między Twoim HumanoidRootPart a celem
+local function GetDistance(player)
+    if not LocalPlayer.Character or not player.Character then return math.huge end
+    local myHrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local targetHrp = player.Character:FindFirstChild("HumanoidRootPart")
     
-    local char = LocalPlayer.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then 
-            hum.Sit = false
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then part.CanCollide = true end
-        end
+    if myHrp and targetHrp then
+        return (myHrp.Position - targetHrp.Position).Magnitude
     end
-
-    if self.UI then self.UI:Destroy() end
-    self.IsRiding = false
+    return math.huge
 end
 
-function Piggyback:Attach()
+-- Raycasting dla Mobile
+local function GetPlayerFromInput(input)
+    local pos = input.Position
+    local ray = Camera:ScreenPointToRay(pos.X, pos.Y)
+    
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {LocalPlayer.Character}
+    
+    local result = Workspace:Raycast(ray.Origin, ray.Direction * CONFIG.MaxClickDistance, params)
+    
+    if result and result.Instance then
+        local model = result.Instance:FindFirstAncestorOfClass("Model")
+        if model then
+            local p = Players:GetPlayerFromCharacter(model)
+            if p and p ~= LocalPlayer then return p end
+        end
+    end
+    return nil
+end
+
+function PiggybackController:CreateExitButton()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "Delta_Piggyback_UI"
+    screenGui.ResetOnSpawn = false
+    
+    local success = pcall(function() screenGui.Parent = CoreGui end)
+    if not success then screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+    local exitButton = Instance.new("TextButton")
+    exitButton.Size = UDim2.new(0, 120, 0, 60)
+    exitButton.Position = UDim2.new(1, -140, 1, -280) -- Nad przyciskiem skoku
+    exitButton.BackgroundColor3 = CONFIG.ButtonColor
+    exitButton.Text = "OPUŚĆ"
+    exitButton.TextColor3 = Color3.new(1, 1, 1)
+    exitButton.Font = Enum.Font.GothamBold
+    exitButton.TextSize = 18
+    exitButton.Parent = screenGui
+
+    local uiCorner = Instance.new("UICorner")
+    uiCorner.CornerRadius = UDim.new(0, 12)
+    uiCorner.Parent = exitButton
+
+    exitButton.MouseButton1Click:Connect(function()
+        self:Detach()
+    end)
+
+    self.RideJanitor:Add(screenGui)
+end
+
+function PiggybackController:ClearVisuals()
+    self.SelectionState = 0
+    self.Target = nil
+    self.VisualJanitor:Cleanup()
+end
+
+function PiggybackController:Highlight(player)
+    self:ClearVisuals()
+    self.Target = player
+    self.SelectionState = 1
+
+    local hl = Instance.new("Highlight")
+    hl.Adornee = player.Character
+    hl.FillColor = CONFIG.HighlightColor
+    hl.OutlineColor = CONFIG.HighlightOutline
+    hl.FillTransparency = 0.5
+    hl.Parent = CoreGui
+    
+    self.VisualJanitor:Add(hl)
+end
+
+function PiggybackController:Attach()
     if not self.Target or not self.Target.Character then return end
+    
     self.IsRiding = true
     self.SelectionState = 0
-    
-    if self.HighlightObj then self.HighlightObj:Destroy() end
+    self.VisualJanitor:Cleanup()
     
     local char = LocalPlayer.Character
     local tChar = self.Target.Character
+    local hrp = char:WaitForChild("HumanoidRootPart")
+    local tHrp = tChar:WaitForChild("HumanoidRootPart")
     local hum = char:WaitForChild("Humanoid")
+
+    hum.Sit = true
     
-    -- Wyłączenie kolizji, aby nie glitchować gracza
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then part.CanCollide = false end
+    -- Fizyka Constraints
+    local att0 = Instance.new("Attachment", hrp)
+    local att1 = Instance.new("Attachment", tHrp)
+    att1.CFrame = CONFIG.RideOffset
+    
+    local alignPos = Instance.new("AlignPosition", hrp)
+    alignPos.Attachment0 = att0
+    alignPos.Attachment1 = att1
+    alignPos.RigidityEnabled = true
+    
+    local alignOri = Instance.new("AlignOrientation", hrp)
+    alignOri.Attachment0 = att0
+    alignOri.Attachment1 = att1
+    alignOri.RigidityEnabled = true
+
+    self.RideJanitor:Add(att0)
+    self.RideJanitor:Add(att1)
+    self.RideJanitor:Add(alignPos)
+    self.RideJanitor:Add(alignOri)
+
+    -- Wyłączenie kolizji
+    for _, part1 in ipairs(char:GetDescendants()) do
+        if part1:IsA("BasePart") then
+            for _, part2 in ipairs(tChar:GetDescendants()) do
+                if part2:IsA("BasePart") then
+                    local nc = Instance.new("NoCollisionConstraint", hrp)
+                    nc.Part0 = part1
+                    nc.Part1 = part2
+                    self.RideJanitor:Add(nc)
+                end
+            end
+        end
     end
 
-    -- Pętla wymuszająca pozycję i stan siedzenia (Replikacja FE)
-    local rideLoop = RunService.Heartbeat:Connect(function()
-        if not self.IsRiding or not tChar or not tChar:FindFirstChild("HumanoidRootPart") then
-            self:Cleanup()
-            return
-        end
-        
-        -- Wymuszamy stan siedzenia (serwer to widzi)
+    self:CreateExitButton()
+
+    -- Force Sit Loop
+    self.RideJanitor:Add(RunService.Heartbeat:Connect(function()
         hum.Sit = true
-        
-        -- Twarde ustawienie pozycji (serwer to widzi dzięki NetworkOwnership)
-        char:PivotTo(tChar.HumanoidRootPart.CFrame * CONFIG.RideOffset)
-    end)
-    table.insert(self.Connections, rideLoop)
+    end))
+end
+
+function PiggybackController:Detach()
+    if not self.IsRiding then return end
+    self.IsRiding = false
+    self.RideJanitor:Cleanup()
+    self:ClearVisuals()
     
-    self:CreateUI()
+    local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.Sit = false
+        hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+    end
 end
 
-function Piggyback:CreateUI()
-    local gui = Instance.new("ScreenGui", CoreGui)
-    self.UI = gui
-    local btn = Instance.new("TextButton", gui)
-    btn.Size = UDim2.new(0, 120, 0, 50)
-    btn.Position = UDim2.new(1, -140, 1, -200)
-    btn.BackgroundColor3 = CONFIG.ButtonColor
-    btn.Text = "ZEJDŹ"
-    btn.TextColor3 = Color3.new(1,1,1)
-    Instance.new("UICorner", btn)
-    btn.MouseButton1Click:Connect(function() self:Cleanup() end)
-end
-
-function Piggyback:Init()
-    UserInputService.InputBegan:Connect(function(input, processed)
+-------------------------------------------------------------------------------
+-- [ LOGIKA GŁÓWNA ]
+-------------------------------------------------------------------------------
+function PiggybackController:Init()
+    self.MainJanitor:Add(UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
+        
         if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
             if self.IsRiding then return end
             
-            local ray = Camera:ScreenPointToRay(input.Position.X, input.Position.Y)
-            local result = Workspace:Raycast(ray.Origin, ray.Direction * CONFIG.MaxClickDistance)
-            local model = result and result.Instance:FindFirstAncestorOfClass("Model")
-            local p = model and Players:GetPlayerFromCharacter(model)
+            local clickedPlayer = GetPlayerFromInput(input)
             
-            if p and p ~= LocalPlayer then
-                if self.Target == p and self.SelectionState == 1 then
-                    local dist = (LocalPlayer.Character.HumanoidRootPart.Position - p.Character.HumanoidRootPart.Position).Magnitude
-                    if dist <= CONFIG.SitDistance then self:Attach() end
+            if clickedPlayer then
+                if self.SelectionState == 0 or self.Target ~= clickedPlayer then
+                    -- Pierwszy klik: Zaznacz gracza
+                    self:Highlight(clickedPlayer)
                 else
-                    self.Target = p
-                    self.SelectionState = 1
-                    if self.HighlightObj then self.HighlightObj:Destroy() end
-                    local hl = Instance.new("Highlight", CoreGui)
-                    hl.Adornee = p.Character
-                    hl.FillColor = CONFIG.HighlightColor
-                    self.HighlightObj = hl
+                    -- Drugi klik: Sprawdź dystans przed wejściem
+                    local distance = GetDistance(clickedPlayer)
+                    
+                    if distance <= CONFIG.SitDistance then
+                        self:Attach()
+                    else
+                        warn("Jesteś za daleko! Podejdź bliżej (" .. math.floor(distance) .. " studs)")
+                        -- Opcjonalne: Możesz tu dodać informację na ekranie
+                    end
                 end
             else
-                self.Target = nil
-                self.SelectionState = 0
-                if self.HighlightObj then self.HighlightObj:Destroy() end
+                self:ClearVisuals()
             end
         end
-    end)
+    end))
 end
 
-Piggyback:Init()
+PiggybackController:Init()
